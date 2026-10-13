@@ -1,459 +1,399 @@
-import pygame
-from audio import play_correct_sound, play_wrong_soundimport
+"""Brain Quest - SQLite + Open Trivia Database API + pygame sound effects.
 
-from tkinter import ttk, messagebox
+Expected files when running from source:
+    brainquest.py
+    sound_manager.py
+    brain_quest.db
+    sounds/
+        Am_thanh_that_vong-....mp3
+        right_answer_sound_effect-....mp3
 
-import sqlite3
+The SoundManager searches both ``sounds/`` and ``assets/sounds/`` locations.
+"""
 
+import html
 import os
-
-import sys
-
 import random
+import sqlite3
+import sys
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+import requests
+
+from sound_manager import SoundManager
 
 
-### CODE BÀI 2 ###
-
-import requests # Thư viện để gọi API
-
-import html     # Thư viện để giải mã các ký tự đặc biệt từ API
-
-### KẾT THÚC CODE BÀI 2 ###
+OPENTDB_API_URL = "https://opentdb.com/api.php"
 
 
-# --- PHẦN 1: HÀM HỖ TRỢ VÀ CÁC HẰNG SỐ ---
-
-
-def resource_path(relative_path):
-
-    """
-
-    Lấy đường dẫn tuyệt đối đến tài nguyên.
-
-    Cần thiết để ứng dụng hoạt động sau khi được đóng gói bằng PyInstaller.
-
-    """
-
-    try:
-
+def resource_path(relative_path: str) -> str:
+    """Return a path to a bundled resource or a file beside this script."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         base_path = sys._MEIPASS
-
-    except Exception:
-
-        base_path = os.path.abspath(".")
-
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 
 
-DB_PATH = resource_path("brain_quest.db")
+# Keep the database beside this script when running normally. When packaged,
+# keep it beside the executable so database changes can persist between runs.
+if getattr(sys, "frozen", False):
+    DB_PATH = os.path.join(os.path.dirname(sys.executable), "brain_quest.db")
+else:
+    DB_PATH = resource_path("brain_quest.db")
 
 
-### CODE BÀI 2 ###
-
-OPENTDB_API_URL = "https://opentdb.com/api.php?amount=10&category=15" # URL cơ sở của API
-
-### KẾT THÚC CODE BÀI 2 ###req
-
-
-
-# --- PHẦN 2: LỚP ỨNG DỤNG CHÍNH ---
-
-
-class QuizAppWithAPI(tk.Tk): # Đổi tên lớp để phản ánh chức năng mới
+class QuizAppWithSound(tk.Tk):
+    """Main Tkinter quiz application."""
 
     def __init__(self):
-
         super().__init__()
 
-
-
-        self.title("SNLT-HP8-B2-ProjectBasic (API & DB)")
-
-        self.geometry("650x500") # Tăng kích thước
-
+        self.title("SNLT-HP8-B3-ProjectBasic (Âm thanh)")
+        self.geometry("650x500")
         self.resizable(False, False)
 
-
-        ### CODE BÀI 2 ###
-
-        # self.current_question_data giờ sẽ là dictionary để thống nhất dữ liệu
-
-        # Format: {"question": str, "options": list, "correct_answer_text": str}
-
         self.current_question_data = None
-
         self.current_score = 0
-
-        self.current_question_is_from_api = False # Cờ để biết nguồn câu hỏi cho "Next"
-
-        ### KẾT THÚC CODE BÀI 2 ###
-
-
-        self._setup_ui()
-
-        self._load_and_display_question_from_db() # Bắt đầu bằng câu hỏi từ DB
-
-
-    def _connect_db(self):
-
-        # (Hàm này giữ nguyên như Bài 8.1)
-
-        if not os.path.exists(DB_PATH):
-
-            messagebox.showerror("Lỗi CSDL", f"Không tìm thấy file CSDL tại: {DB_PATH}\nVui lòng tạo file và thêm dữ liệu.")
-
-            self.quit()
-
-            return None, None
-
-        try:
-
-            conn = sqlite3.connect(DB_PATH)
-
-            cursor = conn.cursor()
-
-            return conn, cursor
-
-        except sqlite3.Error as e:
-
-            messagebox.showerror("Lỗi CSDL", f"Không thể kết nối đến CSDL: {e}")
-
-            self.quit()
-
-            return None, None
-
-
-    def _load_question_from_db(self):
-
-        """
-
-        Tải một câu hỏi ngẫu nhiên từ CSDL và trả về dưới dạng DICTIONARY.
-
-        """
-
-        conn, cursor = self._connect_db()
-
-        if not conn: return None
-
-        try:
-
-            cursor.execute("SELECT question_text, options_text, correct_answer_text FROM questions ORDER BY RANDOM() LIMIT 1")
-
-            row = cursor.fetchone()
-
-            if row:
-
-                ### CODE BÀI 2: Thay đổi để trả về dictionary ###
-
-                q_text, opts_text, correct_ans = row
-
-                return {
-
-                    "question": q_text,
-
-                    "options": opts_text.split(';'),
-
-                    "correct_answer_text": correct_ans
-
-                }
-
-                ### KẾT THÚC CODE BÀI 2 ###
-
-            return None
-
-        except sqlite3.Error as e:
-
-            messagebox.showerror("Lỗi Truy vấn DB", f"Không thể tải câu hỏi từ DB: {e}")
-
-            return None
-
-        finally:
-
-            if conn:
-
-                conn.close()
-
-
-    ### CODE BÀI 2: THÊM HÀM MỚI ĐỂ LẤY DỮ LIỆU TỪ API ###
-
-    def _fetch_question_from_api(self):
-
-        """Tải MỘT câu hỏi ngẫu nhiên từ Open Trivia Database API."""
-
-        params = {'amount': 1, 'type': 'multiple'}
-
-        try:
-
-            response = requests.get(OPENTDB_API_URL, params=params, timeout=10)
-
-            response.raise_for_status()
-
-            data = response.json()
-
-            if data.get("response_code") == 0 and data.get("results"):
-
-                item = data["results"][0]
-
-                question_text = html.unescape(item.get("question", ""))
-
-                correct_answer = html.unescape(item.get("correct_answer", ""))
-
-                incorrect_answers = [html.unescape(ans) for ans in item.get("incorrect_answers", [])]
-
-                options = incorrect_answers + [correct_answer]
-
-                random.shuffle(options)
-
-                return {
-
-                    "question": question_text,
-
-                    "options": options,
-
-                    "correct_answer_text": correct_answer
-
-                }
-
-            else:
-
-                messagebox.showerror("Lỗi API", f"API không trả về kết quả hợp lệ. Code: {data.get('response_code')}")
-
-                return None
-
-        except requests.exceptions.Timeout:
-
-            messagebox.showerror("Lỗi Kết Nối", "Hết thời gian chờ khi kết nối API.")
-
-            return None
-
-        except requests.exceptions.RequestException as e:
-
-            messagebox.showerror("Lỗi Kết Nối", f"Lỗi khi gọi API: {e}")
-
-            return None
-
-        except Exception as e:
-
-            messagebox.showerror("Lỗi Xử Lý", f"Lỗi không xác định: {e}")
-
-            return None
-
-    ### KẾT THÚC CODE BÀI 2 ###
-
-
-    def _setup_ui(self):
-
-        main_frame = ttk.Frame(self, padding="15")
-
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-
-        ### CODE BÀI 2: THÊM CÁC NÚT CHỌN NGUỒN CÂU HỎI ###
-
-        source_frame = ttk.Frame(main_frame)
-
-        source_frame.pack(pady=(0, 15), fill=tk.X)
-
-        ttk.Label(source_frame, text="Nguồn Câu Hỏi:").pack(side=tk.LEFT, padx=(0, 10))
-
-        ttk.Button(source_frame, text="Từ CSDL Local", command=self._load_and_display_question_from_db).pack(side=tk.LEFT, padx=5)
-
-        ttk.Button(source_frame, text="Từ Internet (API)", command=self._load_and_display_question_from_api).pack(side=tk.LEFT, padx=5)
-
-        ### KẾT THÚC CODE BÀI 2 ###
-
-
-        self.question_label = ttk.Label(main_frame, text="Chọn nguồn để bắt đầu!", font=("Arial", 16, "bold"), wraplength=600, justify="center")
-
-        self.question_label.pack(pady=20)
-
-
-        self.options_frame = ttk.Frame(main_frame)
-
-        self.options_frame.pack(pady=10)
-
-        self.option_buttons = []
-
-        style = ttk.Style()
-
-        style.configure("Option.TButton", font=("Arial", 11), padding=5)
-
-        for i in range(4):
-
-            btn = ttk.Button(self.options_frame, text="", command=lambda idx=i: self._option_selected(idx), width=30, style="Option.TButton", state=tk.DISABLED)
-
-            btn.grid(row=i//2, column=i%2, padx=10, pady=5, sticky="ew")
-
-            self.option_buttons.append(btn)
-
-
-        self.score_label = ttk.Label(main_frame, text=f"Điểm: {self.current_score}", font=("Arial", 13))
-
-        self.score_label.pack(pady=10)
-
-       
-
-        ### CODE BÀI 2: THÊM LABEL PHẢN HỒI THAY CHO MESSAGEBOX ###
-
-        self.result_feedback_label = ttk.Label(main_frame, text="", font=("Arial", 12, "italic"))
-
-        self.result_feedback_label.pack(pady=5)
-
-        ### KẾT THÚC CODE BÀI 2 ###
-
-
-        self.next_button = ttk.Button(main_frame, text="Câu Tiếp Theo", command=self._handle_next_question_logic, state=tk.DISABLED)
-
-        self.next_button.pack(pady=15)
-
-       
-
-    ### CODE BÀI 2: TÁCH LOGIC TẢI VÀ HIỂN THỊ ###
-
-    def _load_and_display_question_from_db(self):
-
         self.current_question_is_from_api = False
 
-        db_question_data = self._load_question_from_db()
+        # SoundManager handles pygame initialization and loading sound files.
+        self.sound_manager = SoundManager()
 
-        self.current_question_data = db_question_data
+        self._setup_ui()
+        self._load_and_display_question_from_db()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    # ------------------------------------------------------------------
+    # Database helpers
+    # ------------------------------------------------------------------
+    def _connect_db(self):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            return conn, conn.cursor()
+        except sqlite3.Error as exc:
+            messagebox.showerror(
+                "Lỗi CSDL",
+                f"Không thể kết nối đến CSDL:\n{exc}",
+                parent=self,
+            )
+            return None, None
+
+    def _load_question_from_db(self):
+        """Load a random question from SQLite; options are semicolon-separated."""
+        conn, cursor = self._connect_db()
+        if conn is None:
+            return None
+
+        try:
+            cursor.execute(
+                """
+                SELECT question_text, options_text, correct_answer_text
+                FROM questions
+                ORDER BY RANDOM()
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            question_text, options_text, correct_answer = row
+            options = [option.strip() for option in options_text.split(";") if option.strip()]
+            return {
+                "question": question_text,
+                "options": options,
+                "correct_answer_text": correct_answer,
+            }
+        except sqlite3.Error as exc:
+            messagebox.showerror(
+                "Lỗi truy vấn CSDL",
+                "Không thể tải câu hỏi. Hãy kiểm tra bảng questions có các cột "
+                "question_text, options_text và correct_answer_text.\n\n"
+                f"Chi tiết: {exc}",
+                parent=self,
+            )
+            return None
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # API helper
+    # ------------------------------------------------------------------
+    def _fetch_question_from_api(self):
+        """Fetch one multiple-choice question from Open Trivia Database."""
+        params = {
+            "amount": 1,
+            "category": 15,
+            "type": "multiple",
+        }
+
+        try:
+            response = requests.get(OPENTDB_API_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("response_code") != 0 or not data.get("results"):
+                messagebox.showerror(
+                    "Lỗi API",
+                    "API không trả về câu hỏi hợp lệ. "
+                    f"Mã phản hồi: {data.get('response_code')}",
+                    parent=self,
+                )
+                return None
+
+            item = data["results"][0]
+            question_text = html.unescape(item.get("question", ""))
+            correct_answer = html.unescape(item.get("correct_answer", ""))
+            incorrect_answers = [
+                html.unescape(answer)
+                for answer in item.get("incorrect_answers", [])
+            ]
+            options = incorrect_answers + [correct_answer]
+            random.shuffle(options)
+
+            return {
+                "question": question_text,
+                "options": options,
+                "correct_answer_text": correct_answer,
+            }
+
+        except requests.exceptions.Timeout:
+            messagebox.showerror(
+                "Lỗi kết nối",
+                "Hết thời gian chờ khi kết nối API.",
+                parent=self,
+            )
+        except requests.exceptions.RequestException as exc:
+            messagebox.showerror(
+                "Lỗi kết nối",
+                f"Không thể lấy câu hỏi từ Internet:\n{exc}",
+                parent=self,
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            messagebox.showerror(
+                "Lỗi dữ liệu API",
+                f"Dữ liệu API không hợp lệ:\n{exc}",
+                parent=self,
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+    def _setup_ui(self):
+        main_frame = ttk.Frame(self, padding=15)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        source_frame = ttk.Frame(main_frame)
+        source_frame.pack(pady=(0, 15), fill=tk.X)
+
+        ttk.Label(source_frame, text="Nguồn câu hỏi:").pack(
+            side=tk.LEFT, padx=(0, 10)
+        )
+        ttk.Button(
+            source_frame,
+            text="Từ CSDL Local",
+            command=self._on_db_source_clicked,
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            source_frame,
+            text="Từ Internet (API)",
+            command=self._on_api_source_clicked,
+        ).pack(side=tk.LEFT, padx=5)
+
+        self.question_label = ttk.Label(
+            main_frame,
+            text="Đang tải câu hỏi...",
+            font=("Arial", 16, "bold"),
+            wraplength=600,
+            justify="center",
+        )
+        self.question_label.pack(pady=20)
+
+        self.options_frame = ttk.Frame(main_frame)
+        self.options_frame.pack(pady=10)
+        self.option_buttons = []
+
+        style = ttk.Style(self)
+        style.configure("Option.TButton", font=("Arial", 11), padding=5)
+
+        for index in range(4):
+            button = ttk.Button(
+                self.options_frame,
+                text="",
+                command=lambda idx=index: self._option_selected(idx),
+                width=30,
+                style="Option.TButton",
+                state=tk.DISABLED,
+            )
+            button.grid(
+                row=index // 2,
+                column=index % 2,
+                padx=10,
+                pady=5,
+                sticky="ew",
+            )
+            self.option_buttons.append(button)
+
+        self.score_label = ttk.Label(
+            main_frame,
+            text=f"Điểm: {self.current_score}",
+            font=("Arial", 13),
+        )
+        self.score_label.pack(pady=10)
+
+        self.result_feedback_label = ttk.Label(
+            main_frame,
+            text="",
+            font=("Arial", 12, "italic"),
+        )
+        self.result_feedback_label.pack(pady=5)
+
+        self.next_button = ttk.Button(
+            main_frame,
+            text="Câu Tiếp Theo",
+            command=self._handle_next_question_logic,
+            state=tk.DISABLED,
+        )
+        self.next_button.pack(pady=15)
+
+    # ------------------------------------------------------------------
+    # Event handlers for source buttons
+    # ------------------------------------------------------------------
+    def _on_db_source_clicked(self):
+        self.sound_manager.play_click()
+        self._load_and_display_question_from_db()
+
+    def _on_api_source_clicked(self):
+        self.sound_manager.play_click()
+        self._load_and_display_question_from_api()
+
+    def _load_and_display_question_from_db(self):
+        self.current_question_is_from_api = False
+        self.current_question_data = self._load_question_from_db()
         self._update_ui_with_current_question()
 
-   
-
     def _load_and_display_question_from_api(self):
-
         self.question_label.config(text="Đang tải câu hỏi từ Internet...")
-
         self.update_idletasks()
 
-        api_question_data = self._fetch_question_from_api()
-
-        if api_question_data:
-
-            self.current_question_is_from_api = True
-
-            self.current_question_data = api_question_data
-
-            self._update_ui_with_current_question()
-
-        else:
-
-            self.question_label.config(text="Lỗi tải câu hỏi từ API. Vui lòng thử lại.")
-
-
-    def _update_ui_with_current_question(self):
-
-        """Hàm chung để cập nhật UI sau khi có self.current_question_data."""
-
-        if not self.current_question_data:
-
-            self.question_label.config(text="Không có câu hỏi để hiển thị.")
-
-            for btn in self.option_buttons: btn.config(state=tk.DISABLED)
-
-            self.next_button.config(state=tk.DISABLED)
-
-            return
-
-
-        q_data = self.current_question_data
-
-        self.question_label.config(text=q_data["question"])
-
-        self.result_feedback_label.config(text="") # Xóa feedback của câu trước
-
+        # Disable old answers while the API request is in progress.
+        for button in self.option_buttons:
+            button.config(state=tk.DISABLED)
         self.next_button.config(state=tk.DISABLED)
 
+        question_data = self._fetch_question_from_api()
+        if question_data:
+            self.current_question_is_from_api = True
+            self.current_question_data = question_data
+            self._update_ui_with_current_question()
+        else:
+            self.current_question_data = None
+            self.question_label.config(
+                text="Không tải được câu hỏi. Hãy thử lại hoặc chọn CSDL Local."
+            )
+            self.result_feedback_label.config(text="")
+            for button in self.option_buttons:
+                button.config(text="", state=tk.DISABLED)
+            self.next_button.config(state=tk.DISABLED)
 
-        for i, btn in enumerate(self.option_buttons):
+    def _update_ui_with_current_question(self):
+        if not self.current_question_data:
+            self.question_label.config(
+                text="Không có câu hỏi trong CSDL. Hãy thêm dữ liệu hoặc chọn API."
+            )
+            for button in self.option_buttons:
+                button.config(text="", state=tk.DISABLED)
+            self.result_feedback_label.config(text="")
+            self.next_button.config(state=tk.DISABLED)
+            return
 
-            if i < len(q_data["options"]):
+        question_data = self.current_question_data
+        self.question_label.config(text=question_data["question"])
+        self.result_feedback_label.config(text="")
+        self.next_button.config(state=tk.DISABLED)
 
-                btn.config(text=q_data["options"][i], state=tk.NORMAL)
-
+        options = question_data["options"]
+        for index, button in enumerate(self.option_buttons):
+            if index < len(options):
+                button.config(text=options[index], state=tk.NORMAL)
             else:
+                button.config(text="", state=tk.DISABLED)
 
-                btn.config(text="", state=tk.DISABLED)
-
-    ### KẾT THÚC CODE BÀI 2 ###
-
-
+    # ------------------------------------------------------------------
+    # Answer checking and next question
+    # ------------------------------------------------------------------
     def _option_selected(self, index):
+        if not self.current_question_data:
+            return
 
-        if not self.current_question_data: return
+        options = self.current_question_data["options"]
+        if not (0 <= index < len(options)):
+            return
 
+        selected_answer = options[index]
+        correct_answer = self.current_question_data["correct_answer_text"]
 
-        q_data = self.current_question_data
+        # Disable all answers so the score and sound trigger only once.
+        for button in self.option_buttons:
+            button.config(state=tk.DISABLED)
 
-        options = q_data["options"]
-
-        correct_answer_text = q_data["correct_answer_text"]
-
-
-        if 0 <= index < len(options):
-
-            selected_answer_text = options[index]
-
-           
-
-            ### CODE BÀI 2: CẬP NHẬT LOGIC PHẢN HỒI VÀ VÔ HIỆU HÓA NÚT ###
-
-            for btn in self.option_buttons:
-
-                btn.config(state=tk.DISABLED)
-
-
-
-        if selected_answer_text == correct_answer_text:
+        if selected_answer == correct_answer:
             self.current_score += 10
-
-            # Phát tiếng khi trả lời đúng
-            play_correct_sound()
-
             self.result_feedback_label.config(
                 text="Chính xác!",
-                foreground="green"
+                foreground="green",
             )
-
+            self.sound_manager.play_correct()
         else:
-            # Phát tiếng khi trả lời sai
-            play_wrong_sound()
-
             self.result_feedback_label.config(
-                text=f"Sai rồi! Đáp án đúng là: {correct_answer_text}",
-                foreground="red"
+                text=f"Sai rồi! Đáp án đúng là: {correct_answer}",
+                foreground="red",
             )
-           
+            self.sound_manager.play_wrong()
 
-            self.score_label.config(text=f"Điểm: {self.current_score}")
-
-            self.next_button.config(state=tk.NORMAL) # Cho phép nhấn "Câu Tiếp Theo"
-
-            ### KẾT THÚC CODE BÀI 2 ###
-
-   
-
-    ### CODE BÀI 2: THÊM HÀM MỚI CHO NÚT NEXT ###
+        # Always update score and enable the next-question button.
+        self.score_label.config(text=f"Điểm: {self.current_score}")
+        self.next_button.config(state=tk.NORMAL)
 
     def _handle_next_question_logic(self):
-
-        """Xử lý logic khi nhấn nút "Câu Tiếp Theo"."""
-
+        self.sound_manager.play_click()
         if self.current_question_is_from_api:
-
             self._load_and_display_question_from_api()
-
         else:
-
             self._load_and_display_question_from_db()
 
-    ### KẾT THÚC CODE BÀI 2 ###
+    def _on_close(self):
+        try:
+            self.sound_manager.close()
+        except Exception:
+            # Older SoundManager versions may not define close().
+            pass
+        self.destroy()
+
+
+def initialize_database():
+    """Create the expected questions table if the database is new."""
+    try:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS questions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_text TEXT NOT NULL,
+                    options_text TEXT NOT NULL,
+                    correct_answer_text TEXT NOT NULL
+                )
+                """
+            )
+    except sqlite3.Error as exc:
+        print(f"Lỗi khởi tạo CSDL: {exc}")
 
 
 if __name__ == "__main__":
-
-    app = QuizAppWithAPI()
-
+    initialize_database()
+    app = QuizAppWithSound()
     app.mainloop()
